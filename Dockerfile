@@ -1,6 +1,6 @@
 FROM python:2.7.15-slim
 
-COPY . /fiss
+COPY . /TAG-fiss
 
 RUN set -ex \
     && apt-get update && apt-get install -y --no-install-recommends curl \
