@@ -1277,8 +1277,7 @@ def mop(args):
     deleteable_files = [f for f in unreferenced_files if can_delete(f)]
 
     if len(deleteable_files) == 0:
-        if args.verbose:
-            print("No files to mop in " + workspace['workspace']['name'])
+        print("No files to mop in " + workspace['workspace']['name'])
         return 0
 
     if args.verbose or args.dry_run:
