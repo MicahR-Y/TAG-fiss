@@ -1066,6 +1066,98 @@ def health(args):
     fapi._check_response_code(r, 200)
     return r.content
 
+##@fiss_cmd
+##def taskMop(args):
+##    r = fapi.get_workspace(args.project, args.workspace)
+##    fapi._check_response_code(r, 200)
+##    workspace = r.json()
+##    bucket = workspace['workspace']['bucketName']
+##
+##    subs = fapi.list_submissions(args.project,args.workspace).json()
+##    cacheSource = dict()
+##    deletList = list()
+##    delete_files = set()
+##
+##    for sub in subs:
+##        print("processing sub " + str(sub['submissionId']))
+##        subwfs = fapi.get_submission(args.project,args.workspace, sub['submissionId']).json()
+##        for wf in subwfs['workflows']:
+##            wfs = fapi.get_workflow_metadata(args.project, args.workspace, subwfs['submissionId'], wf['workflowId']).json()
+##            for task in args.tasks:
+##                cacheSource[task] = []
+##                taskName = str(args.workflow) + "." + str(task)
+##                try:
+##                    if wfs['calls'][taskName][0]['executionStatus']!="Done":
+##                        continue
+##                except KeyError:
+##                    continue
+##                try:
+##                    cacheRes = wfs['calls'][taskName][0]['callCaching']['result']
+##                except KeyError:
+##                    continue
+##                if cacheRes != "Cache Miss":
+##                    deletList.append("gs://" + bucket + "/" + str(subwfs['submissionId']) + "/" + str(args.workflow) + "/" + str(wf['workflowId']) + "/call-" + str(task) + "/**")
+##                else:
+##                    cacheSource[task].append("gs://" + bucket + "/" + str(subwfs['submissionId']) + "/" + str(args.workflow) + "/" + str(wf['workflowId']) + "/call-" + str(task) + "/")
+##    for bucket in deletList:
+##        gsutil_args = ["gsutil", "ls", bucket]
+##        bucket_files = subprocess.check_output(gsutil_args, stderr=subprocess.PIPE)
+##
+##        if type(bucket_files) == bytes:
+##            bucket_files = bucket_files.decode()
+##
+##        for afile in bucket_files.strip().split('\n'):
+##            delete_files.add(afile)
+##    def can_delete(f):
+##        '''Return true if this file should not be deleted in a mop.'''
+##        # Don't delete logs
+##        if f.endswith('.log'):
+##            return False
+##        # Don't delete return codes from jobs
+##        if f.endswith('-rc.txt'):
+##            return False
+##        # Don't delete tool's exec.sh
+##        if f.endswith('exec.sh'):
+##            return False
+##        try:
+##            if len(args.exclude_files)>0:
+##                for file in args.exclude_files:
+##                   if f.endswith(file):
+##                        return False
+##        except TypeError:
+##            pass
+##
+##        return True
+##    
+##    deleteable_files = [f for f in delete_files if can_delete(f)]
+##
+##    if len(deleteable_files) == 0:
+##        print("TaskMop did not find any deletable files.")
+##        return 0
+##
+##    if args.verbose or args.dry_run:
+##        print("Found {0} files to delete:\n".format(len(deleteable_files))
+##               + "\n".join(deleteable_files ) + '\n')
+##        
+##    message = "WARNING: Delete {0} files in {1} ({2})".format(
+##        len(deleteable_files), ("gs://" + str(bucket)), workspace['workspace']['name'])
+##
+##    if args.dry_run or (not args.yes and not _confirm_prompt(message)):
+##        return 0
+##
+##    # Pipe the deleteable_files into gsutil rm to remove them
+##    if args.verbose:
+##        print("Deleting files with gsutil rm")
+##    gsrm_args = ['gsutil', '-m', 'rm', '-I']
+##    PIPE = subprocess.PIPE
+##    STDOUT=subprocess.STDOUT
+##    gsrm_proc = subprocess.Popen(gsrm_args, stdin=PIPE, stdout=PIPE, stderr=STDOUT)
+##    # Pipe the deleteable_files into gsutil
+##    result = gsrm_proc.communicate(input='\n'.join(deleteable_files))[0]
+##    if args.verbose:
+##        print(result.rstrip())
+##    return 0
+    
 @fiss_cmd
 def mop(args):
     ''' Clean up unreferenced data in a workspace'''
@@ -1135,10 +1227,17 @@ def mop(args):
 
     # Set difference shows files in bucket that aren't referenced
     unreferenced_files = bucket_files - referenced_files
+    excluded_files = set()
     try:
         if len(args.exclude_files)>0 and args.verbose:
             for file in args.exclude_files:
                 print("Mop will not delete " + str(file) + " files.")
+    except TypeError:
+        pass
+    try:
+            if len(args.exclude_tasks)>0:
+                for task in args.exclude_tasks:
+                    print("Mop will not delete outputs of the " + str(task) + " task.")
     except TypeError:
         pass
     # Filter out files like .logs and rc.txt
@@ -1157,7 +1256,19 @@ def mop(args):
             if len(args.exclude_files)>0:
                 for file in args.exclude_files:
                    if f.endswith(file):
+                        excluded_files.add(f)
                         return False
+        except TypeError:
+            pass
+        try:
+            if len(args.exclude_tasks)>0:
+                for task in args.exclude_tasks:
+                    try:
+                        if os.path.split(os.path.dirname(f))[1].split('call-')[1] == task:
+                            excluded_files.add(f)
+                            return False
+                    except IndexError:
+                        print("Index error with " + str(f))
         except TypeError:
             pass
 
@@ -1173,7 +1284,9 @@ def mop(args):
     if args.verbose or args.dry_run:
         print("Found {0} files to delete:\n".format(len(deleteable_files))
                + "\n".join(deleteable_files ) + '\n')
-
+        print("Found {0} files to exclude from deletion:\n".format(len(excluded_files))
+               + "\n".join(excluded_files ) + '\n')
+    
     message = "WARNING: Delete {0} files in {1} ({2})".format(
         len(deleteable_files), bucket_prefix, workspace['workspace']['name'])
     if args.dry_run or (not args.yes and not _confirm_prompt(message)):
@@ -2241,6 +2354,11 @@ def main(argv=None):
                            "perform update")
     subp.set_defaults(func=attr_fill_null)
 
+    # Delete outputs from a task which are coppied from a cached result
+##    subp = subparsers.add_parser(
+##        'task_mop', description='Remove copies of cached results from specified tasks in a workspace\'s bucket',
+##        parents=[workspace_parent])
+
     # Delete unreferenced files from a workspace's bucket
     subp = subparsers.add_parser(
         'mop', description='Remove unused files from a workspace\'s bucket',
@@ -2249,6 +2367,8 @@ def main(argv=None):
                       help='Show deletions that would be performed')
     subp.add_argument('--exclude-files', nargs="*",
                       help='Exclude files with the following extenstions from being deleted with mop')
+    subp.add_argument('--exclude-tasks', nargs="*",
+                      help='Exclude outputs from the following tasks from being deleted with mop')
     subp.set_defaults(func=mop)
 
     subp = subparsers.add_parser('noop',
